@@ -1,0 +1,541 @@
+// Ušetri — database schema (see ARCHITECTURE.md §4)
+// PostgreSQL + Prisma 7. The pg_trgm/unaccent/earthdistance extensions and
+// trigram GIN indexes for search live in raw SQL migrations on top of this schema.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+enum Role {
+  USER
+  EDITOR
+  ADMIN
+}
+
+enum TokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  MERGED
+}
+
+enum LeafletStatus {
+  UPLOADED
+  PROCESSING
+  REVIEW
+  PUBLISHED
+  EXPIRED
+  ARCHIVED
+}
+
+enum OfferStatus {
+  DRAFT
+  PUBLISHED
+  EXPIRED
+}
+
+enum OfferSource {
+  AI
+  MANUAL
+}
+
+enum ExtractionJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  EDITED
+  REJECTED
+}
+
+enum FavoriteType {
+  PRODUCT
+  BRAND
+  CATEGORY
+  CHAIN
+}
+
+enum NotificationFrequency {
+  INSTANT
+  DAILY
+  WEEKLY
+}
+
+enum RatingValue {
+  GREAT
+  GOOD
+  NOT_WORTH
+}
+
+enum DealEventType {
+  VIEW
+  CLICK
+  LIST_ADD
+  SHARE
+}
+
+enum SavingsSource {
+  LIST_PURCHASE
+  DEAL_USED
+}
+
+enum EmailStatus {
+  SENT
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+}
+
+// ──────────────────────────── Identity ───────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String?
+  role            Role      @default(USER)
+  locale          String    @default("sk")
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tokens               VerificationToken[]
+  favorites            Favorite[]
+  watchedTerms         WatchedTerm[]
+  notificationSettings NotificationSettings?
+  notifications        Notification[]
+  emailLogs            EmailLog[]
+  shoppingLists        ShoppingList[]
+  ratings              Rating[]
+  dealEvents           DealEvent[]
+  savingsEntries       SavingsEntry[]
+  uploadedLeaflets     Leaflet[]             @relation("LeafletUploader")
+  reviewedItems        ExtractedItem[]       @relation("ItemReviewer")
+}
+
+model VerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  type      TokenType
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+// ──────────────────────── Geography & retail ─────────────────────────
+
+model Country {
+  id            String  @id @default(cuid())
+  code          String  @unique // "SK"
+  name          String
+  currency      String // "EUR"
+  defaultLocale String // "sk"
+  active        Boolean @default(true)
+
+  stores   Store[]
+  leaflets Leaflet[]
+  products Product[]
+}
+
+model Chain {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  logoUrl   String?
+  website   String?
+  color     String? // brand hex for UI accents
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stores       Store[]
+  leaflets     Leaflet[]
+  offers       Offer[]
+  priceHistory PriceHistory[]
+}
+
+model Store {
+  id           String   @id @default(cuid())
+  chainId      String
+  countryId    String
+  name         String
+  address      String
+  city         String
+  postalCode   String?
+  lat          Float
+  lng          Float
+  openingHours Json? // { mon: "07:00-21:00", ... }
+  phone        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  chain   Chain   @relation(fields: [chainId], references: [id])
+  country Country @relation(fields: [countryId], references: [id])
+
+  @@index([chainId])
+  @@index([city])
+}
+
+// ───────────────────────────── Catalog ───────────────────────────────
+
+model Brand {
+  id      String  @id @default(cuid())
+  slug    String  @unique
+  name    String
+  logoUrl String?
+
+  products Product[]
+
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Brand_name_trgm_idx")
+}
+
+model Category {
+  id        String  @id @default(cuid())
+  slug      String  @unique
+  parentId  String?
+  name      String // Slovak display name
+  icon      String? // lucide icon name or emoji
+  sortOrder Int     @default(0)
+
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+}
+
+model Product {
+  id             String        @id @default(cuid())
+  slug           String        @unique
+  name           String
+  normalizedName String // lower(unaccent(name)); trigram-indexed via raw migration
+  brandId        String?
+  categoryId     String?
+  countryId      String
+  unit           String? // "kg" | "l" | "ks" | "g" | "ml" | "bal"
+  unitSize       String? // "1 l", "500 g"
+  ean            String?
+  imageUrl       String?
+  description    String?
+  attributes     Json? // { bio, vegan, glutenFree, lactoseFree }
+  status         ProductStatus @default(ACTIVE)
+  mergedIntoId   String? // dedup: points to the canonical product
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  brand        Brand?          @relation(fields: [brandId], references: [id])
+  category     Category?       @relation(fields: [categoryId], references: [id])
+  country      Country         @relation(fields: [countryId], references: [id])
+  offers       Offer[]
+  priceHistory PriceHistory[]
+  listItems    ShoppingListItem[]
+  matchedItems ExtractedItem[]
+
+  @@index([normalizedName])
+  @@index([normalizedName(ops: raw("gin_trgm_ops"))], type: Gin, map: "Product_normalizedName_trgm_idx")
+  @@index([categoryId, status])
+  @@index([brandId])
+}
+
+// ──────────────────────── Leaflets & offers ──────────────────────────
+
+model Leaflet {
+  id           String        @id @default(cuid())
+  chainId      String
+  countryId    String
+  title        String
+  pdfUrl       String
+  pageCount    Int           @default(0)
+  validFrom    DateTime
+  validTo      DateTime
+  status       LeafletStatus @default(UPLOADED)
+  publishedAt  DateTime?
+  uploadedById String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  chain          Chain           @relation(fields: [chainId], references: [id])
+  country        Country         @relation(fields: [countryId], references: [id])
+  uploadedBy     User?           @relation("LeafletUploader", fields: [uploadedById], references: [id])
+  pages          LeafletPage[]
+  offers         Offer[]
+  extractionJobs ExtractionJob[]
+
+  @@index([chainId, status])
+  @@index([status, validTo])
+}
+
+model LeafletPage {
+  id         String @id @default(cuid())
+  leafletId  String
+  pageNumber Int
+  imageUrl   String
+  width      Int
+  height     Int
+
+  leaflet        Leaflet         @relation(fields: [leafletId], references: [id], onDelete: Cascade)
+  offers         Offer[]
+  extractedItems ExtractedItem[]
+
+  @@unique([leafletId, pageNumber])
+}
+
+model Offer {
+  id             String      @id @default(cuid())
+  productId      String
+  leafletId      String?
+  leafletPageId  String?
+  chainId        String
+  price          Decimal     @db.Decimal(10, 2)
+  originalPrice  Decimal?    @db.Decimal(10, 2)
+  discountPct    Int?
+  currency       String      @default("EUR")
+  validFrom      DateTime
+  validTo        DateTime
+  imageUrl       String? // crop from leaflet page
+  cropBbox       Json? // { x, y, w, h } relative to page image
+  conditions     String? // e.g. "len s Clubcard"
+  source         OfferSource @default(MANUAL)
+  aiConfidence   Float?
+  status         OfferStatus @default(DRAFT)
+  viewsCount     Int         @default(0)
+  favoritesCount Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  product      Product        @relation(fields: [productId], references: [id])
+  leaflet      Leaflet?       @relation(fields: [leafletId], references: [id])
+  leafletPage  LeafletPage?   @relation(fields: [leafletPageId], references: [id])
+  chain        Chain          @relation(fields: [chainId], references: [id])
+  priceHistory PriceHistory[]
+  ratings      Rating[]
+  dealEvents   DealEvent[]
+
+  @@index([status, validTo])
+  @@index([chainId, status])
+  @@index([productId, validFrom])
+  @@index([status, discountPct])
+}
+
+model PriceHistory {
+  id            String   @id @default(cuid())
+  productId     String
+  chainId       String
+  offerId       String?
+  price         Decimal  @db.Decimal(10, 2)
+  originalPrice Decimal? @db.Decimal(10, 2)
+  discountPct   Int?
+  recordedAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+  chain   Chain   @relation(fields: [chainId], references: [id])
+  offer   Offer?  @relation(fields: [offerId], references: [id])
+
+  @@index([productId, recordedAt])
+}
+
+// ─────────────────────────── AI pipeline ─────────────────────────────
+
+model ExtractionJob {
+  id           String              @id @default(cuid())
+  leafletId    String
+  status       ExtractionJobStatus @default(QUEUED)
+  model        String
+  pagesDone    Int                 @default(0)
+  error        String?
+  costEstimate Decimal?            @db.Decimal(10, 4)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime            @default(now())
+
+  leaflet Leaflet         @relation(fields: [leafletId], references: [id], onDelete: Cascade)
+  items   ExtractedItem[]
+
+  @@index([leafletId])
+  @@index([status])
+}
+
+model ExtractedItem {
+  id                   String       @id @default(cuid())
+  jobId                String
+  leafletPageId        String?
+  raw                  Json // full model output for this item
+  matchedProductId     String?
+  matchConfidence      Float?
+  extractionConfidence Float?
+  reviewStatus         ReviewStatus @default(PENDING)
+  reviewedById         String?
+  reviewedAt           DateTime?
+  createdAt            DateTime     @default(now())
+
+  job            ExtractionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  leafletPage    LeafletPage?  @relation(fields: [leafletPageId], references: [id])
+  matchedProduct Product?      @relation(fields: [matchedProductId], references: [id])
+  reviewedBy     User?         @relation("ItemReviewer", fields: [reviewedById], references: [id])
+
+  @@index([jobId, reviewStatus])
+  @@index([reviewStatus, extractionConfidence])
+}
+
+// ───────────────────────── Personalization ───────────────────────────
+
+model Favorite {
+  id         String       @id @default(cuid())
+  userId     String
+  entityType FavoriteType
+  entityId   String
+  createdAt  DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entityType, entityId])
+  @@index([entityType, entityId])
+}
+
+model WatchedTerm {
+  id             String   @id @default(cuid())
+  userId         String
+  term           String
+  normalizedTerm String
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, normalizedTerm])
+  @@index([normalizedTerm(ops: raw("gin_trgm_ops"))], type: Gin, map: "WatchedTerm_normalizedTerm_trgm_idx")
+}
+
+model NotificationSettings {
+  userId            String                @id
+  frequency         NotificationFrequency @default(WEEKLY)
+  minDiscountPct    Int?
+  onFavoriteProduct Boolean               @default(true)
+  onFavoriteBrand   Boolean               @default(true)
+  onNewLeaflet      Boolean               @default(true)
+  onPriceDrop       Boolean               @default(true)
+  onListCheaper     Boolean               @default(true)
+  updatedAt         DateTime              @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String // "favorite_product_sale" | "new_leaflet" | ...
+  payload   Json
+  readAt    DateTime?
+  emailedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, emailedAt])
+}
+
+model EmailLog {
+  id                String      @id @default(cuid())
+  userId            String?
+  type              String
+  subject           String
+  providerMessageId String?
+  status            EmailStatus @default(SENT)
+  sentAt            DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+// ─────────────────────── Shopping & engagement ───────────────────────
+
+model ShoppingList {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  emoji     String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items ShoppingListItem[]
+
+  @@index([userId])
+}
+
+model ShoppingListItem {
+  id        String   @id @default(cuid())
+  listId    String
+  productId String?
+  freeText  String? // unmatched item, e.g. "kvások"
+  quantity  Decimal  @default(1) @db.Decimal(10, 3)
+  unit      String?
+  checked   Boolean  @default(false)
+  addedAt   DateTime @default(now())
+
+  list    ShoppingList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  product Product?     @relation(fields: [productId], references: [id])
+
+  @@index([listId])
+}
+
+model Rating {
+  id        String      @id @default(cuid())
+  userId    String
+  offerId   String
+  value     RatingValue
+  createdAt DateTime    @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, offerId])
+}
+
+model DealEvent {
+  id        String        @id @default(cuid())
+  userId    String?
+  offerId   String
+  type      DealEventType
+  createdAt DateTime      @default(now())
+
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@index([offerId, type, createdAt])
+  @@index([userId, createdAt])
+}
+
+model SavingsEntry {
+  id          String        @id @default(cuid())
+  userId      String
+  offerId     String?
+  amountSaved Decimal       @db.Decimal(10, 2)
+  source      SavingsSource
+  createdAt   DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
