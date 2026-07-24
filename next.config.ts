@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
         hostname: "fexuxibvzksnlgokgwfr.supabase.co",
         pathname: "/storage/v1/object/public/**",
       },
+      {
+        // Open Food Facts product photos (ODbL — attributed in the UI)
+        protocol: "https",
+        hostname: "images.openfoodfacts.org",
+        pathname: "/images/products/**",
+      },
     ],
   },
 };

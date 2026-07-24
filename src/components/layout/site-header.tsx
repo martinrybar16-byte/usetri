@@ -11,6 +11,7 @@ import { SearchBox } from "@/components/search/search-box";
 
 const NAV_ITEMS = [
   { href: "/zlavy", key: "discounts" },
+  { href: "/produkty", key: "products" },
   { href: "/letaky", key: "leaflets" },
   { href: "/obchody", key: "stores" },
   { href: "/kategorie", key: "categories" },

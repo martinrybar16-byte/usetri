@@ -187,7 +187,12 @@ export async function listChains() {
 export const getChainBySlug = cache(async (slug: string) => {
   const chain = await db.chain.findUnique({
     where: { slug },
-    include: { stores: { orderBy: { city: "asc" } } },
+    // Only a preview of stores — chains have up to ~1600 branches; the full
+    // set is browsable on the map, which loads per viewport.
+    include: {
+      stores: { orderBy: { city: "asc" }, take: 12 },
+      _count: { select: { stores: true } },
+    },
   });
   if (!chain) return null;
 
@@ -209,6 +214,65 @@ export const getChainBySlug = cache(async (slug: string) => {
 });
 
 // ─────────────────────────── Categories ──────────────────────────────
+
+// ──────────────────── Full product catalog browse ───────────────────
+// Every product we know about, regardless of whether it is currently
+// discounted — users can add any of these to a shopping list and get
+// notified when it goes on sale.
+
+export type CatalogFilter = {
+  categorySlug?: string;
+  brandSlug?: string;
+  onlyDiscounted?: boolean;
+  page?: number;
+  pageSize?: number;
+};
+
+export async function listCatalogProducts(filter: CatalogFilter) {
+  const { categorySlug, brandSlug, onlyDiscounted, page = 1, pageSize = 36 } = filter;
+
+  const where: Prisma.ProductWhereInput = { status: "ACTIVE" };
+
+  if (categorySlug) {
+    const category = await db.category.findUnique({
+      where: { slug: categorySlug },
+      include: { children: { select: { id: true } } },
+    });
+    if (category) {
+      where.categoryId = { in: [category.id, ...category.children.map((c) => c.id)] };
+    }
+  }
+  if (brandSlug) where.brand = { slug: brandSlug };
+  if (onlyDiscounted) {
+    where.offers = { some: { status: "PUBLISHED", validTo: { gte: new Date() } } };
+  }
+
+  const [items, total] = await Promise.all([
+    db.product.findMany({
+      where,
+      orderBy: [{ imageUrl: { sort: "desc", nulls: "last" } }, { name: "asc" }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: {
+        brand: true,
+        category: true,
+        offers: {
+          where: { status: "PUBLISHED", validTo: { gte: new Date() } },
+          orderBy: { price: "asc" },
+          take: 1,
+          include: { chain: true },
+        },
+      },
+    }),
+    db.product.count({ where }),
+  ]);
+
+  return { items, total, page, pageCount: Math.ceil(total / pageSize) };
+}
+
+export type CatalogProduct = Awaited<
+  ReturnType<typeof listCatalogProducts>
+>["items"][number];
 
 export async function listCategoryTree() {
   return db.category.findMany({

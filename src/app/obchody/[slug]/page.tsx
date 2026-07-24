@@ -9,6 +9,7 @@ import { getChainBySlug } from "@/server/services/catalog";
 import { OfferGrid, SectionHeader } from "@/components/catalog/section";
 import { LeafletCard } from "@/components/catalog/leaflet-card";
 import { FavoriteButton } from "@/components/favorites/favorite-button";
+import { StoresMap } from "@/components/map/stores-map";
 import { Button } from "@/components/ui/button";
 
 type Params = Promise<{ slug: string }>;
@@ -116,8 +117,11 @@ export default async function ChainPage({ params }: { params: Params }) {
 
       {chain.stores.length > 0 && (
         <section className="mt-10">
-          <SectionHeader title="Predajne" />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <SectionHeader
+            title={`Predajne (${chain._count.stores.toLocaleString("sk-SK")})`}
+          />
+          <StoresMap chainSlug={chain.slug} />
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {chain.stores.map((store) => (
               <div
                 key={store.id}
@@ -133,6 +137,13 @@ export default async function ChainPage({ params }: { params: Params }) {
               </div>
             ))}
           </div>
+          {chain._count.stores > chain.stores.length && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              Zobrazujeme {chain.stores.length} z{" "}
+              {chain._count.stores.toLocaleString("sk-SK")} predajní — ostatné nájdete
+              na mape vyššie.
+            </p>
+          )}
         </section>
       )}
     </div>

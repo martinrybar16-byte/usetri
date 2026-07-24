@@ -14,22 +14,9 @@ export const metadata: Metadata = {
 };
 
 export default async function ChainsPage() {
-  const [chains, stores] = await Promise.all([
-    listChains(),
-    db.store.findMany({ include: { chain: true } }),
-  ]);
-
-  const mapStores = stores.map((store) => ({
-    id: store.id,
-    name: store.name,
-    address: store.address,
-    city: store.city,
-    lat: store.lat,
-    lng: store.lng,
-    chainName: store.chain.name,
-    chainSlug: store.chain.slug,
-    color: store.chain.color,
-  }));
+  // Stores are loaded by the map per viewport (~2.7k nationwide is far too
+  // many to embed in the page); we only need the total for the caption.
+  const [chains, storeCount] = await Promise.all([listChains(), db.store.count()]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
@@ -38,11 +25,12 @@ export default async function ChainsPage() {
         Sledované obchodné reťazce na Slovensku
       </p>
 
-      {mapStores.length > 0 && (
+      {storeCount > 0 && (
         <div className="mt-6">
-          <StoresMap stores={mapStores} />
+          <StoresMap />
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Povoľte polohu a mapa sa priblíži na predajne vo vašom okolí.
+            {storeCount.toLocaleString("sk-SK")} predajní na Slovensku. Povoľte polohu a
+            mapa sa priblíži na predajne vo vašom okolí.
           </p>
         </div>
       )}
